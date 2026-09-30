@@ -1,1 +1,80 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>批次放行</title><style>body{font:16px system-ui;max-width:1100px;margin:32px auto;padding:0 20px}pre{background:#f3f5f7;padding:16px;overflow:auto}button{padding:8px 14px}</style><h1>药品生产偏差与批次放行</h1><p>偏差、检验、返工、供应商变更和稳定性数据共同约束质量放行。</p><button onclick="loadState()">刷新状态</button><pre id="state">加载中...</pre><script>async function loadState(){state.textContent=JSON.stringify(await (await fetch('/api/state')).json(),null,2)}loadState()</script></html>
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>批次交接与放行审查</title>
+<style>
+  body{font:15px system-ui;max-width:1200px;margin:28px auto;padding:0 20px;color:#1f2933}
+  h1{margin-bottom:4px}
+  .sub{color:#52606d;margin-top:0}
+  button{padding:7px 14px;border:0;border-radius:6px;background:#2563eb;color:#fff;cursor:pointer}
+  button:hover{background:#1d4ed8}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}
+  .card{border:1px solid #e4e7eb;border-radius:10px;padding:14px 16px;background:#fff}
+  .card h2{font-size:16px;margin:0 0 10px}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th,td{border:1px solid #edf0f3;padding:6px 8px;text-align:left;vertical-align:top}
+  th{background:#f8fafc}
+  .badge{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px}
+  .active{background:#dcfce7;color:#166534}
+  .invalidated{background:#fee2e2;color:#991b1b}
+  .confirmed{background:#dbeafe;color:#1e40af}
+  .proposed{background:#fef9c3;color:#854d0e}
+  .completed{background:#dcfce7;color:#166534}
+  .failed{background:#fee2e2;color:#991b1b}
+  .processing{background:#e0e7ff;color:#3730a3}
+  .src{color:#991b1b;font-weight:600}
+  pre{background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px;overflow:auto;max-height:360px}
+  .muted{color:#64748b;font-size:12px}
+</style>
+<h1>批次交接与放行审查</h1>
+<p class="sub">交接时冻结偏差、复测、返工与稳定性依据；交接后前厂只能追加回执。回执作为证据更新会让生效放行结论失效并由新厂质检重算，页面标注每次失效来源。</p>
+<button onclick="loadState()">刷新状态</button>
+<div class="grid">
+  <div class="card"><h2>交接单（冻结快照）</h2><div id="handovers">加载中...</div></div>
+  <div class="card"><h2>放行结论（含失效来源）</h2><div id="conclusions">加载中...</div></div>
+  <div class="card"><h2>前厂回执（证据更新）</h2><div id="receipts">加载中...</div></div>
+  <div class="card"><h2>请求账本（按请求号幂等）</h2><div id="ledger">加载中...</div></div>
+</div>
+<div class="card" style="margin-top:18px"><h2>最近审计留痕</h2><div id="audits"></div></div>
+<details style="margin-top:14px"><summary>原始状态 JSON</summary><pre id="raw"></pre></details>
+<script>
+const esc = s => String(s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const badge = (cls, txt) => `<span class="badge ${cls}">${esc(txt)}</span>`;
+const empty = `<p class="muted">暂无记录</p>`;
+function table(cols, rows){
+  if(!rows.length) return empty;
+  return `<table><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table>`;
+}
+async function loadState(){
+  const s = await (await fetch("/api/state")).json();
+  raw.textContent = JSON.stringify(s, null, 2);
+  document.getElementById("handovers").innerHTML = table(
+    ["#","批次","前厂→新厂","状态","冻结版本","确认人/时间"],
+    s.handovers.map(h => `<tr><td>${h.id}</td><td>${h.batch_id}</td><td>${h.from_factory_id} → ${h.to_factory_id}</td>
+      <td>${badge(h.status, h.status==="confirmed"?"已确认":"待确认")}</td><td>rev ${h.evidence_revision}</td>
+      <td>${esc(h.confirmed_by||"-")}<br><span class="muted">${esc(h.confirmed_at||"")}</span></td></tr>`));
+  document.getElementById("conclusions").innerHTML = table(
+    ["#","批次","结论","状态","证据版本","失效来源 / 末次回执"],
+    s.release_conclusions.map(c => {
+      const src = c.status==="invalidated"
+        ? `<span class="src">被回执 #${c.invalidated_by_receipt_id} 更新失效</span><br><span class="muted">${esc(c.invalidated_at||"")}</span>`
+        : (c.last_receipt_id ? `基于回执 #${c.last_receipt_id}` : "基于冻结快照");
+      return `<tr><td>${c.id}</td><td>${c.batch_id}</td><td>${esc(c.decision)}</td>
+        <td>${badge(c.status, c.status==="active"?"生效":"已失效")}</td><td>rev ${c.evidence_revision}</td><td>${src}</td></tr>`;
+    }));
+  document.getElementById("receipts").innerHTML = table(
+    ["#","交接","请求号","证据类型","内容","版本"],
+    s.receipts.map(r => `<tr><td>${r.id}</td><td>${r.handover_id}</td><td>${esc(r.request_no)}</td>
+      <td>${esc(r.evidence_type)}</td><td>${esc(r.content)}</td><td>rev ${r.evidence_version}</td></tr>`));
+  document.getElementById("ledger").innerHTML = table(
+    ["请求号","类型","状态","尝试","最近错误"],
+    s.request_ledger.map(l => `<tr><td>${esc(l.request_no)}</td><td>${esc(l.kind)}</td>
+      <td>${badge(l.status, l.status)}</td><td>${l.attempt}</td><td class="muted">${esc(l.error||"")}</td></tr>`));
+  document.getElementById("audits").innerHTML = table(
+    ["时间","操作人","动作","对象","细节"],
+    s.audits.map(a => `<tr><td class="muted">${esc(a.at)}</td><td>${esc(a.actor)}</td><td>${esc(a.action)}</td>
+      <td>${esc(a.entity_type)} #${esc(a.entity_id)}</td><td class="muted">${esc(a.details_json)}</td></tr>`));
+}
+loadState();
+</script>
+</html>
